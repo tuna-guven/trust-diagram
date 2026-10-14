@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "fixture-self-stored-key",
+  "title": "Self-stored key",
+  "locations": [
+    {
+      "id": "home",
+      "name": "Home",
+      "kind": "physical",
+      "note": ""
+    }
+  ],
+  "databases": [
+    {
+      "id": "recovery",
+      "name": "Recovery DB",
+      "category": "password-manager",
+      "product": "KeePassXC",
+      "encryption": "KDBX4 / ChaCha20",
+      "dataTypes": [
+        "passwords",
+        "recovery-codes"
+      ],
+      "locationId": "home",
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": true,
+      "note": "",
+      "style": {
+        "x": 0,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    }
+  ],
+  "keys": [
+    {
+      "id": "master",
+      "name": "master passphrase",
+      "category": "passphrase",
+      "memorized": false,
+      "note": "",
+      "style": {
+        "x": 240,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "c-recovery-master",
+      "type": "contains",
+      "from": "recovery",
+      "to": "master",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    },
+    {
+      "id": "u-master-recovery",
+      "type": "unlocks-full",
+      "from": "master",
+      "to": "recovery",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    }
+  ],
+  "rules": [],
+  "scenarios": [],
+  "notes": "A password database stores its own master passphrase and nothing else holds it.",
+  "view": {
+    "panX": 0,
+    "panY": 0,
+    "zoom": 1
+  }
+}

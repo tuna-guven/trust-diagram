@@ -1,0 +1,59 @@
+{
+  "description": "Blocking three-node loop: restic needs a password stored only in a file that exists only inside restic.",
+  "circularGroups": [
+    {
+      "severity": "blocking",
+      "nodeIds": [
+        "kdbx",
+        "restic",
+        "restic-pass"
+      ],
+      "cycleEdgeIds": [
+        "c-kdbx-restic-pass",
+        "u-restic-pass-restic",
+        "c-restic-kdbx"
+      ]
+    }
+  ],
+  "baselineOpen": [
+    "laptop"
+  ],
+  "baselineKnown": [
+    "disk-pass",
+    "master"
+  ],
+  "issues": [
+    {
+      "code": "circular-blocking",
+      "nodeIds": [
+        "kdbx",
+        "restic",
+        "restic-pass"
+      ]
+    },
+    {
+      "code": "key-only-memorized",
+      "nodeIds": [
+        "disk-pass"
+      ]
+    },
+    {
+      "code": "key-only-memorized",
+      "nodeIds": [
+        "master"
+      ]
+    },
+    {
+      "code": "critical-not-openable",
+      "nodeIds": [
+        "restic"
+      ]
+    },
+    {
+      "code": "key-single-copy",
+      "nodeIds": [
+        "restic-pass"
+      ]
+    }
+  ]
+}

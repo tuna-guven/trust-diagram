@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "id": "fixture-backward-key",
+  "title": "Backward key",
+  "locations": [
+    {
+      "id": "home",
+      "name": "Home",
+      "kind": "physical",
+      "note": ""
+    },
+    {
+      "id": "office",
+      "name": "Office",
+      "kind": "physical",
+      "note": ""
+    }
+  ],
+  "databases": [
+    {
+      "id": "laptop",
+      "name": "Laptop",
+      "category": "device",
+      "product": "ThinkPad",
+      "encryption": "LUKS2",
+      "dataTypes": [],
+      "locationId": "home",
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": false,
+      "note": "",
+      "style": {
+        "x": 0,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    },
+    {
+      "id": "daily",
+      "name": "Daily database",
+      "category": "password-manager",
+      "product": "KeePassXC",
+      "encryption": "KDBX4",
+      "dataTypes": [
+        "passwords"
+      ],
+      "locationId": null,
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": true,
+      "note": "",
+      "style": {
+        "x": 240,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    },
+    {
+      "id": "backup",
+      "name": "Backup drive",
+      "category": "drive",
+      "product": "USB SSD",
+      "encryption": "LUKS2",
+      "dataTypes": [
+        "backups",
+        "keys"
+      ],
+      "locationId": "office",
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": false,
+      "note": "",
+      "style": {
+        "x": 480,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    }
+  ],
+  "keys": [
+    {
+      "id": "disk-pass",
+      "name": "laptop disk passphrase",
+      "category": "passphrase",
+      "memorized": true,
+      "note": "",
+      "style": {
+        "x": 0,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    },
+    {
+      "id": "daily-pass",
+      "name": "daily db passphrase",
+      "category": "passphrase",
+      "memorized": true,
+      "note": "",
+      "style": {
+        "x": 240,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    },
+    {
+      "id": "backup-key",
+      "name": "backup drive key file",
+      "category": "key-file",
+      "memorized": false,
+      "note": "",
+      "style": {
+        "x": 480,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "u-disk-pass-laptop",
+      "type": "unlocks-full",
+      "from": "disk-pass",
+      "to": "laptop",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    },
+    {
+      "id": "c-laptop-daily",
+      "type": "contains",
+      "from": "laptop",
+      "to": "daily",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    },
+    {
+      "id": "u-daily-pass-daily",
+      "type": "unlocks-full",
+      "from": "daily-pass",
+      "to": "daily",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    },
+    {
+      "id": "c-daily-backup-key",
+      "type": "contains",
+      "from": "daily",
+      "to": "backup-key",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    },
+    {
+      "id": "u-backup-key-backup",
+      "type": "unlocks-full",
+      "from": "backup-key",
+      "to": "backup",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    },
+    {
+      "id": "c-backup-disk-pass",
+      "type": "contains",
+      "from": "backup",
+      "to": "disk-pass",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    }
+  ],
+  "rules": [],
+  "scenarios": [],
+  "notes": "The laptop disk passphrase is also stored on a backup drive whose key lives inside the laptop.",
+  "view": {
+    "panX": 0,
+    "panY": 0,
+    "zoom": 1
+  }
+}

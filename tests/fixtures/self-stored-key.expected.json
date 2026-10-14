@@ -1,0 +1,39 @@
+{
+  "description": "Blocking two-node loop: the only copy of the key is inside the database it opens.",
+  "circularGroups": [
+    {
+      "severity": "blocking",
+      "nodeIds": [
+        "master",
+        "recovery"
+      ],
+      "cycleEdgeIds": [
+        "u-master-recovery",
+        "c-recovery-master"
+      ]
+    }
+  ],
+  "baselineOpen": [],
+  "baselineKnown": [],
+  "issues": [
+    {
+      "code": "circular-blocking",
+      "nodeIds": [
+        "master",
+        "recovery"
+      ]
+    },
+    {
+      "code": "critical-not-openable",
+      "nodeIds": [
+        "recovery"
+      ]
+    },
+    {
+      "code": "key-single-copy",
+      "nodeIds": [
+        "master"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "id": "fixture-kdbx-inside-restic",
+  "title": "KeePass file only inside restic",
+  "locations": [
+    {
+      "id": "home",
+      "name": "Home",
+      "kind": "physical",
+      "note": ""
+    },
+    {
+      "id": "b2",
+      "name": "Backblaze B2",
+      "kind": "digital",
+      "note": ""
+    }
+  ],
+  "databases": [
+    {
+      "id": "laptop",
+      "name": "Laptop",
+      "category": "device",
+      "product": "ThinkPad",
+      "encryption": "LUKS2",
+      "dataTypes": [],
+      "locationId": "home",
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": false,
+      "note": "",
+      "style": {
+        "x": 0,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    },
+    {
+      "id": "restic",
+      "name": "restic repository",
+      "category": "backup-repository",
+      "product": "restic",
+      "encryption": "AES-256 / Poly1305",
+      "dataTypes": [
+        "backups"
+      ],
+      "locationId": "b2",
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": true,
+      "note": "",
+      "style": {
+        "x": 240,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    },
+    {
+      "id": "kdbx",
+      "name": "vault.kdbx",
+      "category": "password-manager",
+      "product": "KeePassXC",
+      "encryption": "KDBX4",
+      "dataTypes": [
+        "passwords"
+      ],
+      "locationId": null,
+      "locationDetail": "",
+      "protection": "rules",
+      "ephemeral": false,
+      "critical": false,
+      "note": "",
+      "style": {
+        "x": 480,
+        "y": 0,
+        "w": 160,
+        "h": 60,
+        "color": "#336699"
+      }
+    }
+  ],
+  "keys": [
+    {
+      "id": "disk-pass",
+      "name": "laptop disk passphrase",
+      "category": "passphrase",
+      "memorized": true,
+      "note": "",
+      "style": {
+        "x": 0,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    },
+    {
+      "id": "master",
+      "name": "KeePass master passphrase",
+      "category": "passphrase",
+      "memorized": true,
+      "note": "",
+      "style": {
+        "x": 480,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    },
+    {
+      "id": "restic-pass",
+      "name": "restic password",
+      "category": "passphrase",
+      "memorized": false,
+      "note": "",
+      "style": {
+        "x": 240,
+        "y": 120,
+        "w": 160,
+        "h": 60,
+        "color": "#996633"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "u-disk-pass-laptop",
+      "type": "unlocks-full",
+      "from": "disk-pass",
+      "to": "laptop",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    },
+    {
+      "id": "c-restic-kdbx",
+      "type": "contains",
+      "from": "restic",
+      "to": "kdbx",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    },
+    {
+      "id": "u-master-kdbx",
+      "type": "unlocks-full",
+      "from": "master",
+      "to": "kdbx",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    },
+    {
+      "id": "c-kdbx-restic-pass",
+      "type": "contains",
+      "from": "kdbx",
+      "to": "restic-pass",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "solid"
+      }
+    },
+    {
+      "id": "u-restic-pass-restic",
+      "type": "unlocks-full",
+      "from": "restic-pass",
+      "to": "restic",
+      "ruleId": null,
+      "style": {
+        "color": "#555555",
+        "width": 1,
+        "dash": "dashed"
+      }
+    }
+  ],
+  "rules": [],
+  "scenarios": [],
+  "notes": "The only copy of the .kdbx holding the restic password lives inside the restic repository.",
+  "view": {
+    "panX": 0,
+    "panY": 0,
+    "zoom": 1
+  }
+}

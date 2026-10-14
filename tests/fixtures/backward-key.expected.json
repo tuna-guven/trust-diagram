@@ -1,0 +1,56 @@
+{
+  "description": "Redundant loop: the backup drive stores a key upstream of itself, but the memorized passphrase still opens everything.",
+  "circularGroups": [
+    {
+      "severity": "redundant",
+      "nodeIds": [
+        "backup",
+        "backup-key",
+        "daily",
+        "disk-pass",
+        "laptop"
+      ],
+      "cycleEdgeIds": [
+        "c-backup-disk-pass",
+        "u-disk-pass-laptop",
+        "c-laptop-daily",
+        "c-daily-backup-key",
+        "u-backup-key-backup"
+      ]
+    }
+  ],
+  "baselineOpen": [
+    "backup",
+    "daily",
+    "laptop"
+  ],
+  "baselineKnown": [
+    "backup-key",
+    "daily-pass",
+    "disk-pass"
+  ],
+  "issues": [
+    {
+      "code": "circular-redundant",
+      "nodeIds": [
+        "backup",
+        "backup-key",
+        "daily",
+        "disk-pass",
+        "laptop"
+      ]
+    },
+    {
+      "code": "key-only-memorized",
+      "nodeIds": [
+        "daily-pass"
+      ]
+    },
+    {
+      "code": "key-single-copy",
+      "nodeIds": [
+        "backup-key"
+      ]
+    }
+  ]
+}
