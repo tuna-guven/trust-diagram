@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BASELINE_STATE, evaluate, ownerFacts, type BaseFacts, type OwnerState } from "../../src/core/evaluate";
+import { BASELINE_STATE, evaluate, ownerFacts, type BaseFacts, type Evaluation, type OwnerState } from "../../src/core/evaluate";
 import { indexDocument } from "../../src/core/graph";
 import type { Database, Edge, Key, TrustDocument, UnlockRule } from "../../src/core/model";
 import { contains, database, key, location, partial, rule, seededRandom, trustDocument, unlocks } from "./builders";
@@ -182,47 +182,148 @@ describe("evaluate (baseline)", () => {
     });
     expect(run(doc).open.get("vault")).toEqual({ kind: "full", keyId: "z-key", edgeId: "u-z-key-vault" });
   });
+
+  it("records the shallowest container, not one opened in the same round", () => {
+    // "a2" sorts before "z1" but only opens in round 2 (via "a1"); "z1" opens in round 1.
+    const doc = trustDocument({
+      locations: [location("home")],
+      databases: [
+        database("a1", { locationId: "home", protection: "none" }),
+        database("a2", { protection: "none" }),
+        database("target", { protection: "none" }),
+        database("z1", { locationId: "home", protection: "none" }),
+      ],
+      edges: [contains("a1", "a2"), contains("a2", "target"), contains("z1", "target")],
+    });
+    expect(run(doc).available.get("target")).toEqual({ kind: "container", databaseId: "z1", edgeId: "c-z1-target" });
+  });
 });
 
-/** Naive reference: apply the 5.3 definitions until nothing changes, no provenance. */
-function naive(doc: TrustDocument, facts: BaseFacts) {
-  const available = new Set<string>();
-  const open = new Set<string>();
-  const known = new Set(facts.knownKeys);
-  for (let changed = true; changed; ) {
-    changed = false;
+interface Rounds {
+  available: Map<string, number>;
+  open: Map<string, number>;
+  known: Map<string, number>;
+}
+
+/**
+ * Naive reference: apply the 5.3 round rules literally, with no provenance, and record
+ * the first round in which each fact holds (base facts are round 0).
+ */
+function naive(doc: TrustDocument, facts: BaseFacts): Rounds {
+  const available = new Map<string, number>();
+  const open = new Map<string, number>();
+  const known = new Map<string, number>([...facts.knownKeys].map((id) => [id, 0]));
+  for (let round = 1; ; round++) {
+    const before = { available: new Set(available.keys()), open: new Set(open.keys()), known: new Set(known.keys()) };
     for (const d of doc.databases) {
       const containers = doc.edges.filter((e) => e.type === "contains" && e.to === d.id).map((e) => e.from);
       const isAvailable =
-        !d.ephemeral &&
-        !facts.excludedDatabases.has(d.id) &&
-        (facts.heldDatabases.has(d.id) ||
-          (d.locationId !== null && facts.reachableLocations.has(d.locationId)) ||
-          containers.some((c) => open.has(c)));
+        before.available.has(d.id) ||
+        (!d.ephemeral &&
+          !facts.excludedDatabases.has(d.id) &&
+          (facts.heldDatabases.has(d.id) ||
+            (d.locationId !== null && facts.reachableLocations.has(d.locationId)) ||
+            containers.some((c) => before.open.has(c))));
       const ruleMet = (r: UnlockRule): boolean =>
-        doc.edges.filter((e) => e.ruleId === r.id && known.has(e.from)).length >= r.threshold;
+        doc.edges.filter((e) => e.ruleId === r.id && before.known.has(e.from)).length >= r.threshold;
       const isOpen =
         isAvailable &&
         (d.protection === "none" ||
-          doc.edges.some((e) => e.type === "unlocks-full" && e.to === d.id && known.has(e.from)) ||
+          doc.edges.some((e) => e.type === "unlocks-full" && e.to === d.id && before.known.has(e.from)) ||
           doc.rules.some((r) => r.databaseId === d.id && ruleMet(r)));
-      if (isAvailable && !available.has(d.id)) {
-        available.add(d.id);
-        changed = true;
-      }
-      if (isOpen && !open.has(d.id)) {
-        open.add(d.id);
-        changed = true;
-      }
+      if (isAvailable && !available.has(d.id)) available.set(d.id, round);
+      if (isOpen && !open.has(d.id)) open.set(d.id, round);
     }
     for (const e of doc.edges) {
-      if (e.type === "contains" && open.has(e.from) && !known.has(e.to) && doc.keys.some((k) => k.id === e.to)) {
-        known.add(e.to);
-        changed = true;
+      if (e.type === "contains" && before.open.has(e.from) && !known.has(e.to) && doc.keys.some((k) => k.id === e.to)) {
+        known.set(e.to, round);
       }
     }
+    if (available.size === before.available.size && open.size === before.open.size && known.size === before.known.size) {
+      return { available, open, known };
+    }
   }
-  return { available, open, known };
+}
+
+/** The round of each fact implied by the recorded provenance, following the reasons back to base facts. */
+function provenanceRounds(result: Evaluation): Rounds {
+  const rounds: Rounds = { available: new Map(), open: new Map(), known: new Map() };
+  const visiting = new Set<string>();
+  const memo = (kind: keyof Rounds, id: string, compute: () => number): number => {
+    const cached = rounds[kind].get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(`${kind}:${id}`)) throw new Error(`provenance of ${kind} ${id} is circular`);
+    visiting.add(`${kind}:${id}`);
+    const value = compute();
+    rounds[kind].set(id, value);
+    return value;
+  };
+  const knownRound = (id: string): number =>
+    memo("known", id, () => {
+      const reason = result.known.get(id)!;
+      return reason.kind === "base" ? 0 : openRound(reason.databaseId) + 1;
+    });
+  const availableRound = (id: string): number =>
+    memo("available", id, () => {
+      const reason = result.available.get(id)!;
+      return reason.kind === "container" ? openRound(reason.databaseId) + 1 : 1;
+    });
+  const openRound = (id: string): number =>
+    memo("open", id, () => {
+      const reason = result.open.get(id)!;
+      const keyIds = reason.kind === "unprotected" ? [] : reason.kind === "full" ? [reason.keyId] : reason.keyIds;
+      return Math.max(availableRound(id), ...keyIds.map((k) => knownRound(k) + 1));
+    });
+  for (const id of result.known.keys()) knownRound(id);
+  for (const id of result.available.keys()) availableRound(id);
+  for (const id of result.open.keys()) openRound(id);
+  return rounds;
+}
+
+/** Every recorded reason only refers to facts that hold. */
+function expectSoundProvenance(result: Evaluation): void {
+  for (const reason of result.available.values()) {
+    if (reason.kind === "container") expect(result.open.has(reason.databaseId)).toBe(true);
+  }
+  for (const reason of result.open.values()) {
+    if (reason.kind === "full") expect(result.known.has(reason.keyId)).toBe(true);
+    if (reason.kind === "rule") expect(reason.keyIds.every((id) => result.known.has(id))).toBe(true);
+  }
+  for (const reason of result.known.values()) {
+    if (reason.kind === "contained") expect(result.open.has(reason.databaseId)).toBe(true);
+  }
+}
+
+function sortedEntries(map: ReadonlyMap<string, number>): [string, number][] {
+  return [...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function expectMatchesNaive(doc: TrustDocument, facts: BaseFacts): void {
+  const result = evaluate(indexDocument(doc), facts);
+  const expected = naive(doc, facts);
+  expect(sorted(result.available.keys())).toEqual(sorted(expected.available.keys()));
+  expect(sorted(result.open.keys())).toEqual(sorted(expected.open.keys()));
+  expect(sorted(result.known.keys())).toEqual(sorted(expected.known.keys()));
+  expectSoundProvenance(result);
+
+  // The recorded derivations are as shallow as possible (DESIGN.md 5.3).
+  const rounds = provenanceRounds(result);
+  expect(sortedEntries(rounds.available)).toEqual(sortedEntries(expected.available));
+  expect(sortedEntries(rounds.open)).toEqual(sortedEntries(expected.open));
+  expect(sortedEntries(rounds.known)).toEqual(sortedEntries(expected.known));
+}
+
+function subset<T>(random: () => number, items: readonly T[], probability: number): Set<T> {
+  return new Set(items.filter(() => random() < probability));
+}
+
+function shuffle<T>(random: () => number, items: readonly T[]): T[] {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [result[i], result[j]] = [result[j]!, result[i]!];
+  }
+  return result;
 }
 
 function randomDocument(random: () => number): TrustDocument {
@@ -256,34 +357,52 @@ function randomDocument(random: () => number): TrustDocument {
 }
 
 describe("evaluate properties", () => {
-  it("matches the naive fixpoint on random documents and states", () => {
+  it("matches the naive fixpoint for random owner states", () => {
     const random = seededRandom(7);
     for (let runIndex = 0; runIndex < 1000; runIndex++) {
       const doc = randomDocument(random);
+      const biometrics = doc.keys.filter((k) => k.category === "biometric").map((k) => k.id);
       const state: OwnerState = {
         unreachableLocations: new Set(random() < 0.3 ? ["l0"] : []),
-        forgottenKeys: new Set(doc.keys.filter(() => random() < 0.2).map((k) => k.id)),
-        missingDatabases: new Set(doc.databases.filter(() => random() < 0.15).map((d) => d.id)),
-        unavailableBiometrics: new Set(),
+        forgottenKeys: subset(random, doc.keys.map((k) => k.id), 0.2),
+        missingDatabases: subset(random, doc.databases.map((d) => d.id), 0.15),
+        unavailableBiometrics: subset(random, biometrics, 0.5),
       };
-      const facts = ownerFacts(doc, state);
-      const result = evaluate(indexDocument(doc), facts);
-      const expected = naive(doc, facts);
-      expect(sorted(result.available.keys())).toEqual(sorted(expected.available));
-      expect(sorted(result.open.keys())).toEqual(sorted(expected.open));
-      expect(sorted(result.known.keys())).toEqual(sorted(expected.known));
+      expectMatchesNaive(doc, ownerFacts(doc, state));
+    }
+  });
 
-      // Every recorded reason only refers to facts that hold.
-      for (const reason of result.available.values()) {
-        if (reason.kind === "container") expect(result.open.has(reason.databaseId)).toBe(true);
-      }
-      for (const reason of result.open.values()) {
-        if (reason.kind === "full") expect(result.known.has(reason.keyId)).toBe(true);
-        if (reason.kind === "rule") expect(reason.keyIds.every((id) => result.known.has(id))).toBe(true);
-      }
-      for (const reason of result.known.values()) {
-        if (reason.kind === "contained") expect(result.open.has(reason.databaseId)).toBe(true);
-      }
+  it("matches the naive fixpoint for arbitrary base facts, including held databases", () => {
+    const random = seededRandom(8);
+    for (let runIndex = 0; runIndex < 1000; runIndex++) {
+      const doc = randomDocument(random);
+      const databaseIds = doc.databases.map((d) => d.id);
+      const facts: BaseFacts = {
+        reachableLocations: subset(random, ["l0", "l1"], 0.5),
+        knownKeys: subset(random, doc.keys.map((k) => k.id), 0.3),
+        heldDatabases: subset(random, databaseIds, 0.25),
+        excludedDatabases: subset(random, databaseIds, 0.15),
+      };
+      expectMatchesNaive(doc, facts);
+    }
+  });
+
+  it("records the same provenance, in the same order, regardless of document order", () => {
+    const random = seededRandom(9);
+    const entries = (doc: TrustDocument) => {
+      const result = run(doc);
+      return { available: [...result.available], open: [...result.open], known: [...result.known] };
+    };
+    for (let runIndex = 0; runIndex < 300; runIndex++) {
+      const doc = randomDocument(random);
+      const shuffled: TrustDocument = {
+        ...doc,
+        databases: shuffle(random, doc.databases),
+        keys: shuffle(random, doc.keys),
+        edges: shuffle(random, doc.edges),
+        rules: shuffle(random, doc.rules),
+      };
+      expect(entries(shuffled)).toEqual(entries(doc));
     }
   });
 });

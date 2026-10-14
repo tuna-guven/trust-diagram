@@ -48,7 +48,7 @@ Think of a much simpler draw.io or Excalidraw, specialised for one job.
 | Lint | ESLint with typescript-eslint, plus rules banning unsafe DOM sinks |
 | Crypto | WebCrypto (`crypto.subtle`), no library |
 | Storage | IndexedDB, encrypted envelope only |
-| CI / hosting | GitHub Actions, GitHub Pages |
+| CI / hosting | GitHub Actions; static hosting on a dedicated custom domain (see 10.7) |
 
 Versions: current stable at setup time, pinned exactly in `package.json` and locked in `package-lock.json`. Node: current LTS.
 
@@ -174,11 +174,21 @@ interface TrustDocument {
 - `unlocks-partial` must reference an existing rule of the target database. `1 ≤ threshold ≤ keys in rule`.
 - No duplicate edges (same type, from, to, rule).
 - Colours match `^#[0-9a-f]{6}$`. Numbers are finite and within bounds.
-- Limits: 2,000 nodes (databases and keys together), 10,000 edges, 200 characters per name, 5,000 per note. Also 500 locations, 10,000 rules, 200 scenarios and 1,000 events per scenario. Larger input is rejected, not truncated.
+- Limits: 2,000 nodes (databases and keys together), 10,000 edges, 200 characters per name, 5,000 per note (characters are Unicode code points). Also 500 locations, 10,000 rules, 200 scenarios and 1,000 events per scenario. Larger input is rejected, not truncated.
 - Number bounds: coordinates and pan within ±1,000,000; node width and height 1–10,000; zoom 0.05–20; threshold an integer.
 - Ids match `^[A-Za-z0-9_-]{1,64}$` and are unique across the whole document (this accepts `crypto.randomUUID()` output and readable fixture ids).
 - Every field is required; missing fields are errors, never filled with defaults.
 - Unknown fields are dropped. Unknown enum values are rejected.
+- Scenario events must fit the kind of entity they target:
+  - `location-unreachable` and `location-compromised`: any location.
+  - `key-forgotten`: a memorized key, since only a memorized key can be forgotten.
+  - `key-compromised`: any key.
+  - `biometric-unavailable`: a `biometric` key.
+  - `database-lost` and `database-stolen`: a database that is not ephemeral, since an ephemeral one no longer exists.
+
+  An edit that makes an event stop fitting (unticking `memorized`, changing a key's category, marking a database ephemeral, deleting the target) removes that event from every scenario in the same undoable command.
+- Only plain objects and arrays, as `JSON.parse` produces them, are accepted, and only their own data properties are read. Inherited fields and getters are ignored, so a polluted `Object.prototype` cannot supply a field.
+- Raw JSON text goes through `parseDocumentText`, which rejects text longer than 16 MiB (16 × 2²⁰ UTF-16 code units) before calling `JSON.parse`. Parser error messages are not shown, because they quote the input.
 
 ---
 
@@ -189,6 +199,8 @@ interface TrustDocument {
 Build a directed graph *G* over databases and keys:
 - `contains` Database A → X gives edge A → X.
 - `unlocks-*` Key K → Database D gives edge K → D.
+
+Ephemeral databases are not part of *G*, and neither is any connection to or from one. They no longer exist, so they cannot take part in a dependency. Keys they contain stay in *G* (the issues in 6.1 still report such keys as stored nowhere).
 
 ### 5.2 Circularity
 
@@ -212,7 +224,12 @@ Analysis runs against a **state**: the set of reachable locations, forgotten key
 
 Evaluation is a monotone fixpoint (forward chaining): start from base facts, repeatedly open what can be opened, stop when nothing changes. Each opened database and known key records **provenance**: which rule fired and which database supplied each key. This gives a derivation tree for explanations.
 
-Evaluation proceeds in rounds, and each round derives facts only from earlier rounds, so every recorded derivation is as shallow as possible. Within a round, candidates are tried in sorted id order: full unlocks before k-of-n rules, and for a k-of-n rule the first `threshold` known keys by id. The provenance is therefore deterministic.
+Evaluation proceeds in rounds. Round 0 holds the base facts. In each later round:
+- a database becomes available if its location is reachable, or if a container was opened in an earlier round;
+- a database that is available by now, including one that became available in this round, opens if keys known in an earlier round satisfy one of its rules (or if `protection = "none"`);
+- a key becomes known if a database containing it was opened in an earlier round.
+
+Becoming available and opening therefore count as a single step; every other derivation uses only facts from earlier rounds. Each fact is recorded in the first round it can be derived, so every recorded derivation is as shallow as possible. Within a round, candidates are tried in sorted id order: full unlocks before k-of-n rules, and for a k-of-n rule the first `threshold` known keys by id. The provenance is therefore deterministic.
 
 ### 5.4 Baseline state
 
@@ -253,13 +270,21 @@ Recomputed (debounced, ~150 ms) after every edit. Each issue links to the involv
 | Warning | Critical database not openable in the baseline state |
 | Info | Key in a single copy |
 | Info | Key that unlocks nothing |
-| Info | A name looks like a real secret (long, high-entropy string): "Do not enter real secrets" |
+| Info | Text looks like a real secret (a pasted key or token): "Do not enter real secrets" |
 
 Definitions used by these checks:
 - A key's **copies** are the non-ephemeral databases that contain it, plus one if it is memorized. A copy inside an ephemeral database does not count, because that database no longer exists. "Stored nowhere" means no such database.
+- **Ephemeral** databases no longer exist. They never get "Protected database with no unlock rule", and an unlock connection to one does not count, so a key that only unlocks ephemeral databases "unlocks nothing". A critical ephemeral database is still reported as "Critical database not openable", since it can never be recovered; the message says it is ephemeral.
 - **Biometric** keys are exempt from the "stored nowhere", "only memorized" and "single copy" checks, since they are always known unless a scenario disables them.
 - "Key in a single copy" applies to keys that are not memorized and have exactly one copy. A key that is only memorized gets the "only memorized" warning instead.
-- A name **looks like a secret** if any whitespace-separated word is at least 20 characters long, uses at least three character classes (lowercase, uppercase, digit, other), switches class between at least 55% of neighbouring characters, and has at least 3.5 bits of entropy per character. Paths and labels contain long runs of letters, so they fail the class-switch test.
+- Every free-text field is checked: the document title and notes; location name and note; database name, product, encryption, location detail and note; key name and note; rule label; scenario name. One issue is raised per entity, naming the fields but never quoting their text.
+- Text **looks like a secret** if any whitespace-separated word matches one of these rules:
+  - It is at least 20 characters long, uses at least three character classes (lowercase, uppercase, digit, other), switches class between at least 55% of neighbouring characters, and has at least 3.5 bits of entropy per character. Paths and labels contain long runs of letters, so they fail the class-switch test.
+  - It is a single-case hex string of at least 32 digits (optional `0x`), or an uppercase base32 string of at least 16 characters (optional `=` padding), that mixes letters and digits and has at least 3 bits of entropy per character.
+- Uppercase base32 written in groups of four separated by single spaces or dashes (at least four groups, as authenticator apps show TOTP seeds) is joined and tested as one word.
+- Known limits: word-based secrets such as BIP39 seed phrases and diceware passphrases read like prose and are not detected. Non-secret hex values such as hashes, snapshot ids and fingerprints of 32 or more digits are reported, which is acceptable at info severity.
+
+Issue messages quote entity names so the user can find them. A name that itself looks like a secret is replaced by "(name hidden: looks like a secret)", so the panel never repeats a pasted secret.
 
 Issues are sorted by severity, then by the order of this table, then by the first involved id.
 
@@ -407,7 +432,7 @@ Command pattern over document edits, held in memory only (never persisted).
 | Mermaid, DOT (later) | Text exports for docs and Graphviz. |
 
 - Downloads use a `blob:` URL with `<a download>`, revoked right after.
-- Import: file picker or drag and drop, JSON only. Encrypted files prompt for the passphrase. All input goes through `parseDocument` and size limits before anything is rendered.
+- Import: file picker or drag and drop, JSON only. Encrypted files prompt for the passphrase. The file size is checked (`File.size`) before it is read, and all text goes through `parseDocumentText` (4.4) before anything is rendered.
 
 ---
 
@@ -438,13 +463,17 @@ trusted-types 'none';
 
 - `frame-ancestors` is ignored in a meta tag, so the app refuses to render when `window.top !== window.self`.
 - Also set `<meta name="referrer" content="no-referrer">`.
-- Inline styles are never written as `style="..."` attributes. Dynamic styling uses SVG presentation attributes or the CSSOM (`element.style.setProperty`), both of which the CSP allows.
+- Inline styles are never written as `style="..."` attributes. Dynamic styling uses SVG presentation attributes or the CSSOM through the `setStyle` helper in `src/ui/dom.ts`, both of which the CSP allows.
 
 ### 10.4 Code rules
 - Never use `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, or string-based `setTimeout`. Enforced by ESLint and by Trusted Types at runtime.
-- Build DOM only through `createElement` / `createElementNS` and `textContent`, via helpers in `src/ui/dom.ts`.
+- Build DOM only through `createElement` / `createElementNS` and `textContent`, via helpers in `src/ui/dom.ts`. The helpers allowlist tags and attributes; a new one is added only after review. Presentation attributes parsed as CSS (`fill`, `marker-end` and so on) may only reference `url(#id)` in the same document, and `fill`/`stroke` must be a `#rrggbb` colour or a paint keyword. ESLint bans `setAttribute*`, `createElement*` and assignments to URL properties (`href`, `src` and similar) everywhere else.
+- `id`, `name` and `for` values must start with `tc-` (pattern `^tc-[A-Za-z0-9_-]{1,64}$`). The hyphen means an element can never shadow a global identifier through the window's named properties (DOM clobbering), whatever text a user typed.
+- Inline styles are set only through `setStyle(element, property, value)` in `src/ui/dom.ts`. It allowlists properties (custom properties must start with `--tc-`) and functions (`calc`, `var`, transforms and similar), and rejects backslashes, so a value cannot load a resource with `url()`, `image-set()` or CSS escapes. Constructable stylesheets (`CSSStyleSheet`, `insertRule`, `replaceSync`, `adoptedStyleSheets`) are banned.
+- Lint bans match computed access too (`el["innerHTML"]`, string literals naming a sink) and the method itself, so `.call`, `.apply` and destructuring cannot bypass them. Also banned outside `src/ui/dom.ts`: `DOMParser`, `createContextualFragment`, `setHTMLUnsafe`, `parseHTMLUnsafe`, `importNode`, `adoptNode`, `document.implementation`, `toggleAttribute`, `attributes`, `getAttributeNode*` and `setNamedItem*`. Static rules cannot catch every dynamically built name; CSP and Trusted Types are the runtime backstop.
 - User strings only ever reach the DOM as text content or validated attribute values. Colours must pass the hex regex before use.
 - No network APIs: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource` and `navigator.sendBeacon` are banned by lint rule and blocked by CSP.
+- No navigation APIs. CSP does not govern top-level navigation, so a URL carrying data would leave the machine despite `connect-src 'none'`. `window.open`, `location.assign`, `location.replace` and assignments to `location` (bare, or through `window` or `document`) are banned by lint rule.
 - No third-party fonts, icons or CDNs. Icons are inline SVG paths in `src/ui/icons.ts`.
 - Random values only from `crypto.getRandomValues` / `crypto.randomUUID`.
 
@@ -452,12 +481,26 @@ trusted-types 'none';
 - Zero runtime dependencies. Adding any runtime dependency requires a written justification in the PR.
 - `.npmrc` sets `ignore-scripts=true` and `save-exact=true`. CI installs with `npm ci`.
 - GitHub Actions pin third-party actions to full commit SHAs and use least-privilege `permissions`.
-- Dependabot for dev dependencies and actions. CI runs `npm audit --audit-level=high`.
+- Dependabot for dev dependencies and actions, with a 7-day cooldown so a new release is not proposed until it has been public for a week. CI runs `npm audit --audit-level=high`.
+- The Pages deploy (disabled until 10.7 is satisfied) runs the full CI workflow (checks, audit, build and e2e, including the zero-network test) first and deploys only if it passes. The deploy build installs from the lockfile without a dependency cache.
 - Releases build from a tag. The README documents how to verify a build locally (`npm ci && npm run build` and compare `dist/`).
 
 ### 10.6 Running locally
 - `npm run preview` serves `dist/` on `127.0.0.1` only.
 - Any static file server bound to localhost works. The app needs no backend.
+
+### 10.7 Hosting origin
+
+> **Warning: never deploy to `tuna-guven.github.io`.** The app must be served from a dedicated origin: a custom domain (or subdomain) that hosts nothing else. Until that domain exists, the Pages deploy workflow is parked at `.github/disabled-workflows/pages.yml`, outside `.github/workflows/`, so GitHub never runs it. Re-enabling it means moving it back. Dependabot does not watch it there, so refresh its action pins at that point.
+
+The browser's security boundary is the origin (scheme, host, port), not the path. Every GitHub Pages project site of an account is served from the same origin, `https://<account>.github.io`, so `/trust-diagram/` would share it with every other repository the account publishes, now or later. On a shared origin:
+
+- **CSP gives no protection.** `script-src 'self'` and `worker-src 'self'` allow any script on the origin, including one from another repository.
+- **Service workers can take over the app.** A user site (`<account>.github.io` repository) can register a service worker with scope `/`. It would then intercept every request for this app and serve its own JavaScript, which runs with the app's full privileges, sees the passphrase and decrypted documents, and persists after that site's content changes.
+- **Same-origin windows can read the app.** Any page on the origin can `window.open` the app and read its DOM, including decrypted documents after the user unlocks. The frame check (10.3) does not stop this.
+- **Storage is shared.** IndexedDB belongs to the origin, so other pages can read the encrypted vault (enabling offline passphrase guessing), delete it, or replace it. AES-GCM detects tampering but cannot prevent loss.
+
+Each of these needs only one other page on the origin to be malicious or to have an XSS bug, so the app's security would depend on every repository the account ever publishes. A dedicated origin makes the app the only code that origin ever runs. Before re-enabling the deploy, configure the custom domain in the repository's Pages settings (with HTTPS enforced) and serve nothing else from it.
 
 ---
 
@@ -503,7 +546,7 @@ src/
 tests/
   core/*.test.ts          unit tests per core module
   persist/*.test.ts       envelope round trip, tamper detection
-  fixtures/*.json         example documents with expected results
+  fixtures/*.json         one document per known mistake, with expected results
 e2e/
   *.spec.ts               Playwright flows
 ```
@@ -534,13 +577,13 @@ e2e/
 |---|---|---|
 | M0 | Scaffold: Vite, TS strict, ESLint, Vitest, Playwright, CSP meta, CI, Pages deploy | Blank app deploys; CI green; CSP active |
 | M1 | Core model, schema, graph, cycles, evaluate, issues | Unit tests and fixtures pass |
-| M2 | Canvas: create, move, edit, delete nodes and edges; inspector; undo/redo | Example fixture can be drawn by hand |
+| M2 | Canvas: create, move, edit, delete nodes and edges; inspector; undo/redo | Each fixture in `tests/fixtures/` can be drawn by hand |
 | M3 | Live issues panel, cycle highlighting, fix suggestions | Suggestions apply and pass verification |
 | M4 | Paths panel with derivations and highlighting | Brute-force tests pass |
 | M5 | Scenarios: checkbox matrix, presets, owner and attacker results, saved scenarios | Fixture scenarios match expected results |
 | M6 | Encrypted vault, unlock screen, autosave, auto-lock, wipe | Persistence tests pass; no plaintext in storage |
 | M7 | Import/export: JSON (plain and encrypted), SVG, PNG | Round trip is lossless |
-| M8 | Auto-layout, resilience sweep in a worker, accessibility pass, themes, example template | E2E suite passes; a11y checklist complete |
+| M8 | Auto-layout, resilience sweep in a worker, accessibility pass, themes | E2E suite passes; a11y checklist complete |
 
 ---
 

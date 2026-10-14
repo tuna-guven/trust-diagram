@@ -17,7 +17,7 @@ export const ISSUE_CODES = [
   "critical-not-openable",
   "key-single-copy",
   "key-unlocks-nothing",
-  "name-looks-secret",
+  "text-looks-secret",
 ] as const;
 export type IssueCode = (typeof ISSUE_CODES)[number];
 
@@ -25,7 +25,10 @@ export interface Issue {
   code: IssueCode;
   severity: IssueSeverity;
   message: string;
-  /** Sorted ids of the databases, keys and locations involved. */
+  /**
+   * Sorted ids of the databases, keys and locations involved. A text issue names the
+   * entity holding the text, which can also be a rule, a scenario or the document.
+   */
   nodeIds: readonly Id[];
   /** Sorted ids of the edges involved. */
   edgeIds: readonly Id[];
@@ -48,6 +51,15 @@ const SECRET_MIN_CLASSES = 3;
 const SECRET_MIN_SWITCH_RATIO = 0.55;
 const SECRET_MIN_ENTROPY_BITS = 3.5;
 
+// Hex and base32 keys use only two character classes, so the test above misses them.
+// Their fixed alphabets identify them instead: 32 hex digits or 16 base32 characters
+// (128 and 80 bits), single-case, mixing letters and digits. Authenticator apps show
+// base32 seeds in space- or dash-separated groups of four, so those runs are joined.
+const HEX_KEY = /^(?:0x)?(?:[0-9a-f]{32,}|[0-9A-F]{32,})$/;
+const BASE32_KEY = /^[A-Z2-7]{16,}=*$/;
+const BASE32_GROUPS = /(?:^|\s)([A-Z2-7]{4}(?:[ -][A-Z2-7]{4}){3,})(?=\s|$)/g;
+const ENCODED_MIN_ENTROPY_BITS = 3;
+
 type CharClass = "lower" | "upper" | "digit" | "symbol";
 
 function charClass(char: string): CharClass {
@@ -57,13 +69,7 @@ function charClass(char: string): CharClass {
   return "symbol";
 }
 
-function wordLooksLikeSecret(word: string): boolean {
-  const chars = Array.from(word);
-  if (chars.length < SECRET_MIN_LENGTH) return false;
-  const classes = chars.map(charClass);
-  if (new Set(classes).size < SECRET_MIN_CLASSES) return false;
-  const switches = classes.filter((c, i) => i > 0 && c !== classes[i - 1]).length;
-  if (switches / (chars.length - 1) < SECRET_MIN_SWITCH_RATIO) return false;
+function entropyBits(chars: readonly string[]): number {
   const counts = new Map<string, number>();
   for (const char of chars) counts.set(char, (counts.get(char) ?? 0) + 1);
   let entropy = 0;
@@ -71,17 +77,48 @@ function wordLooksLikeSecret(word: string): boolean {
     const p = count / chars.length;
     entropy -= p * Math.log2(p);
   }
-  return entropy >= SECRET_MIN_ENTROPY_BITS;
+  return entropy;
 }
 
-export function looksLikeSecret(name: string): boolean {
-  return name.split(/\s+/).some(wordLooksLikeSecret);
+function encodedLooksRandom(encoded: string): boolean {
+  const chars = Array.from(encoded.replace(/^0x|=+$/g, ""));
+  const classes = new Set(chars.map(charClass));
+  return classes.has("digit") && classes.size === 2 && entropyBits(chars) >= ENCODED_MIN_ENTROPY_BITS;
+}
+
+function wordLooksLikeSecret(word: string): boolean {
+  if ((HEX_KEY.test(word) || BASE32_KEY.test(word)) && encodedLooksRandom(word)) return true;
+  const chars = Array.from(word);
+  if (chars.length < SECRET_MIN_LENGTH) return false;
+  const classes = chars.map(charClass);
+  if (new Set(classes).size < SECRET_MIN_CLASSES) return false;
+  const switches = classes.filter((c, i) => i > 0 && c !== classes[i - 1]).length;
+  if (switches / (chars.length - 1) < SECRET_MIN_SWITCH_RATIO) return false;
+  return entropyBits(chars) >= SECRET_MIN_ENTROPY_BITS;
+}
+
+/**
+ * Whether free text contains something that looks like a pasted key or token. Word-based
+ * secrets (seed phrases, diceware passphrases) read like prose, so they are not detected.
+ */
+export function looksLikeSecret(text: string): boolean {
+  if (text.split(/\s+/).some(wordLooksLikeSecret)) return true;
+  return Array.from(text.matchAll(BASE32_GROUPS)).some((match) => encodedLooksRandom((match[1] ?? "").replace(/[ -]/g, "")));
+}
+
+// Messages quote names so the user can find the entity, but a name that looks like a
+// pasted secret is withheld: the panel must not repeat it (DESIGN.md 6.1).
+const HIDDEN_NAME = "(name hidden: looks like a secret)";
+
+function displayName(name: string): string {
+  return looksLikeSecret(name) ? HIDDEN_NAME : name;
 }
 
 function nodeLabel(index: DocumentIndex, id: Id): string {
   const database = index.databases.get(id);
-  if (database !== undefined) return `[${database.name}]`;
-  return index.keys.get(id)?.name ?? id;
+  if (database !== undefined) return `[${displayName(database.name)}]`;
+  const key = index.keys.get(id);
+  return key === undefined ? id : displayName(key.name);
 }
 
 /** "[Recovery DB] → contains → master passphrase → unlocks → [Recovery DB]" */
@@ -115,11 +152,13 @@ function circularIssues(index: DocumentIndex, groups: readonly ClassifiedGroup[]
   });
 }
 
+function exists(index: DocumentIndex, databaseId: Id): boolean {
+  return index.databases.get(databaseId)?.ephemeral === false;
+}
+
 /** Containers that still exist; an ephemeral database's copy is gone after setup. */
 function storedCopies(index: DocumentIndex, key: Key): Id[] {
-  return (index.containers.get(key.id) ?? [])
-    .filter((link) => index.databases.get(link.nodeId)?.ephemeral === false)
-    .map((link) => link.edgeId);
+  return (index.containers.get(key.id) ?? []).filter((link) => exists(index, link.nodeId)).map((link) => link.edgeId);
 }
 
 function keyIssues(index: DocumentIndex): Issue[] {
@@ -129,15 +168,16 @@ function keyIssues(index: DocumentIndex): Issue[] {
     const biometric = key.category === "biometric";
     if (!biometric && copies.length === 0) {
       if (key.memorized) {
-        issues.push(issue("key-only-memorized", "warning", `"${key.name}" is only memorized. Forgetting it loses it.`, [key.id]));
+        issues.push(issue("key-only-memorized", "warning", `"${displayName(key.name)}" is only memorized. Forgetting it loses it.`, [key.id]));
       } else {
-        issues.push(issue("key-unobtainable", "warning", `"${key.name}" is stored nowhere and not memorized, so it cannot be obtained.`, [key.id]));
+        issues.push(issue("key-unobtainable", "warning", `"${displayName(key.name)}" is stored nowhere and not memorized, so it cannot be obtained.`, [key.id]));
       }
     } else if (!biometric && !key.memorized && copies.length === 1) {
-      issues.push(issue("key-single-copy", "info", `"${key.name}" exists in a single copy.`, [key.id], copies));
+      issues.push(issue("key-single-copy", "info", `"${displayName(key.name)}" exists in a single copy.`, [key.id], copies));
     }
-    if ((index.unlockTargets.get(key.id) ?? []).length === 0) {
-      issues.push(issue("key-unlocks-nothing", "info", `"${key.name}" unlocks nothing.`, [key.id]));
+    // Unlocking a database that no longer exists is unlocking nothing.
+    if (!(index.unlockTargets.get(key.id) ?? []).some((link) => exists(index, link.nodeId))) {
+      issues.push(issue("key-unlocks-nothing", "info", `"${displayName(key.name)}" unlocks nothing.`, [key.id]));
     }
   }
   return issues;
@@ -147,21 +187,59 @@ function databaseIssues(index: DocumentIndex, baseline: Evaluation): Issue[] {
   const issues: Issue[] = [];
   for (const database of index.databases.values()) {
     const hasRule = (index.fullUnlocks.get(database.id) ?? []).length > 0 || (index.rules.get(database.id) ?? []).length > 0;
-    if (database.protection === "rules" && !hasRule) {
-      issues.push(issue("database-without-rule", "warning", `[${database.name}] is protected but has no unlock rule, so it can never be opened.`, [database.id]));
+    // An ephemeral database no longer exists, so a missing rule cannot matter. Marking one
+    // critical is a modelling mistake, though: it can never be recovered.
+    if (database.protection === "rules" && !hasRule && !database.ephemeral) {
+      issues.push(issue("database-without-rule", "warning", `[${displayName(database.name)}] is protected but has no unlock rule, so it can never be opened.`, [database.id]));
     }
-    if (database.critical && !baseline.open.has(database.id)) {
-      issues.push(issue("critical-not-openable", "warning", `Critical database [${database.name}] cannot be opened on a normal day.`, [database.id]));
+    if (database.critical && database.ephemeral) {
+      issues.push(
+        issue("critical-not-openable", "warning", `Critical database [${displayName(database.name)}] is ephemeral: it no longer exists, so it can never be opened.`, [database.id]),
+      );
+    } else if (database.critical && !baseline.open.has(database.id)) {
+      issues.push(issue("critical-not-openable", "warning", `Critical database [${displayName(database.name)}] cannot be opened on a normal day.`, [database.id]));
     }
   }
   return issues;
 }
 
-function secretNameIssues(doc: TrustDocument): Issue[] {
-  const named = [...doc.locations, ...doc.databases, ...doc.keys];
-  return named
-    .filter((entity) => looksLikeSecret(entity.name))
-    .map((entity) => issue("name-looks-secret", "info", "This name looks like a real secret. Do not enter real secrets.", [entity.id]));
+interface TextSource {
+  id: Id;
+  /** Field label and its text, in the order the inspector shows them. */
+  fields: readonly (readonly [string, string])[];
+}
+
+function textSources(doc: TrustDocument): TextSource[] {
+  return [
+    { id: doc.id, fields: [["title", doc.title], ["notes", doc.notes]] },
+    ...doc.locations.map((l) => ({ id: l.id, fields: [["name", l.name], ["note", l.note]] as const })),
+    ...doc.databases.map((d) => ({
+      id: d.id,
+      fields: [["name", d.name], ["product", d.product], ["encryption", d.encryption], ["location detail", d.locationDetail], ["note", d.note]] as const,
+    })),
+    ...doc.keys.map((k) => ({ id: k.id, fields: [["name", k.name], ["note", k.note]] as const })),
+    ...doc.rules.map((r) => ({ id: r.id, fields: [["label", r.label]] as const })),
+    ...doc.scenarios.map((s) => ({ id: s.id, fields: [["name", s.name]] as const })),
+  ];
+}
+
+function listFields(labels: readonly string[]): string {
+  const last = labels.at(-1) ?? "";
+  return labels.length <= 1 ? last : `${labels.slice(0, -1).join(", ")} and ${last}`;
+}
+
+// The message names the fields, never their text: repeating a pasted secret would show it again.
+function secretTextIssues(doc: TrustDocument): Issue[] {
+  const issues: Issue[] = [];
+  for (const source of textSources(doc)) {
+    const labels = source.fields.filter(([, text]) => looksLikeSecret(text)).map(([label]) => label);
+    if (labels.length === 0) continue;
+    const verb = labels.length === 1 ? "looks" : "look";
+    issues.push(
+      issue("text-looks-secret", "info", `The ${listFields(labels)} ${verb} like a real secret. Do not enter real secrets.`, [source.id]),
+    );
+  }
+  return issues;
 }
 
 function compareIssues(a: Issue, b: Issue): number {
@@ -180,7 +258,7 @@ export function analyzeDocument(doc: TrustDocument): Analysis {
     ...circularIssues(index, circularGroups),
     ...keyIssues(index),
     ...databaseIssues(index, baseline),
-    ...secretNameIssues(doc),
+    ...secretTextIssues(doc),
   ].sort(compareIssues);
   return { index, baseline, circularGroups, issues };
 }

@@ -7,9 +7,13 @@ The design is specified in [`docs/DESIGN.md`](docs/DESIGN.md).
 ## Privacy and limits
 
 - The app is static files. It makes **no network requests**, which a strict Content Security Policy (`connect-src 'none'`) enforces.
-- It models *where* secrets live. **Do not enter real secrets.**
-- Saved work is encrypted at rest in your browser.
+- It models *where* secrets live. **Do not enter real secrets.** It warns about text that looks like a pasted key or token, but it cannot recognise word-based secrets such as seed phrases or passphrases.
+- Saving work is planned for a later release, encrypted at rest in your browser. Until then nothing is stored: closing the tab discards the diagram.
 - It **cannot** protect you from malware on your device, malicious browser extensions, a compromised browser, or someone watching your screen.
+
+## Hosting
+
+> **Warning:** do not deploy this app to `tuna-guven.github.io` (or any `<account>.github.io` address). All GitHub Pages sites of an account share one browser origin, so any other site on it could take over the app or read its data. The app will be served from a dedicated custom domain; until then the deploy workflow is parked in `.github/disabled-workflows/`, where GitHub does not run it. See [`docs/DESIGN.md`](docs/DESIGN.md) section 10.7.
 
 ## Run locally
 
@@ -35,4 +39,4 @@ See [`CLAUDE.md`](CLAUDE.md) for commands and rules. Run `npm run check` before 
 
 ## License
 
-GPL-3.0. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).

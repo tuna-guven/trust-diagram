@@ -1,15 +1,20 @@
 name: CI
 
+# pages.yml is parked in .github/disabled-workflows/ until the app has its own domain
+# (DESIGN.md 10.7), so pushes to main run this workflow directly. When pages.yml moves
+# back to .github/workflows/, drop the push trigger:
+# it calls this workflow, so a deploy only happens after every check has passed.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

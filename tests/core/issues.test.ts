@@ -39,6 +39,41 @@ describe("circular group issues", () => {
   });
 });
 
+describe("ephemeral databases", () => {
+  it("raise no circular issue, but keys only they held are still stored nowhere", () => {
+    const doc = trustDocument({
+      databases: [database("tails", { category: "session", ephemeral: true, protection: "none" })],
+      keys: [key("generated")],
+      edges: [contains("tails", "generated"), unlocks("generated", "tails")],
+    });
+    const analysis = analyzeDocument(doc);
+    expect(analysis.circularGroups).toEqual([]);
+    expect(analysis.issues.map((i) => i.code)).toEqual(["key-unobtainable", "key-unlocks-nothing"]);
+  });
+
+  it("are not flagged for missing unlock rules", () => {
+    const doc = trustDocument({ databases: [database("setup", { ephemeral: true })] });
+    expect(codesFor(doc, "setup")).toEqual([]);
+  });
+
+  it("are flagged when marked critical, because they can never be recovered", () => {
+    const doc = trustDocument({ databases: [database("setup", { ephemeral: true, critical: true, protection: "none" })] });
+    const [first] = analyzeDocument(doc).issues;
+    expect(first).toMatchObject({ code: "critical-not-openable", severity: "warning", nodeIds: ["setup"] });
+    expect(first?.message).toContain("is ephemeral");
+  });
+
+  it("do not count as something a key unlocks", () => {
+    const doc = trustDocument({
+      databases: [database("setup", { ephemeral: true }), database("vault")],
+      keys: [key("only-setup", { memorized: true }), key("both", { memorized: true })],
+      edges: [unlocks("only-setup", "setup"), unlocks("both", "setup"), unlocks("both", "vault")],
+    });
+    expect(codesFor(doc, "only-setup")).toContain("key-unlocks-nothing");
+    expect(codesFor(doc, "both")).not.toContain("key-unlocks-nothing");
+  });
+});
+
 describe("database issues", () => {
   it("flags a protected database without any unlock rule", () => {
     const doc = trustDocument({ databases: [database("orphan"), database("open", { protection: "none" })] });
@@ -127,13 +162,80 @@ describe("looksLikeSecret", () => {
     ["Backblaze B2 bucket restic-laptop-2026", false],
     ["Xk9#mQ2$vL7pW4@nR8zT", true],
     ["token: ghp_8fK2mQ9xLp4ZrT7vWc1Ns6Yb3", true],
-  ])("%s -> %s", (name, expected) => {
-    expect(looksLikeSecret(name)).toBe(expected);
+    ["9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", true],
+    ["key 0x9F86D081884C7D659A2FEAA0C55AD015", true],
+    ["9f86d081884c7d659a2feaa0c55ad015A3BF", false],
+    ["deadbeefdeadbeefdeadbeefdeadbeef", false],
+    ["JBSWY3DPEHPK3PXP", true],
+    ["seed JBSW Y3DP EHPK 3PXP for the bank", true],
+    ["JBSW-Y3DP-EHPK-3PXP", true],
+    ["KEYS DISK HOME SAFE", false],
+    ["LUKS2 AES XTS PLAIN64 SHA256", false],
+    ["abandon ability able about above absent absorb abstract absurd abuse access accident", false],
+  ])("%s -> %s", (text, expected) => {
+    expect(looksLikeSecret(text)).toBe(expected);
   });
 
-  it("produces an info issue on any named entity", () => {
-    const doc = trustDocument({ locations: [location("loc", { name: "Xk9#mQ2$vL7pW4@nR8zT" })] });
-    expect(analyzeDocument(doc).issues).toMatchObject([{ code: "name-looks-secret", severity: "info", nodeIds: ["loc"] }]);
+  it("produces one info issue per entity, naming the fields but not their text", () => {
+    const secret = "Xk9#mQ2$vL7pW4@nR8zT";
+    const doc = trustDocument({
+      locations: [location("loc", { name: secret, note: `stored here: ${secret}` })],
+      databases: [database("db", { locationDetail: secret, protection: "none" })],
+    });
+    const issues = analyzeDocument(doc).issues.filter((i) => i.code === "text-looks-secret");
+    expect(issues).toMatchObject([
+      { severity: "info", nodeIds: ["db"], message: "The location detail looks like a real secret. Do not enter real secrets." },
+      { severity: "info", nodeIds: ["loc"], message: "The name and note look like a real secret. Do not enter real secrets." },
+    ]);
+    expect(issues.some((i) => i.message.includes(secret))).toBe(false);
+  });
+
+  it("never repeats a secret-looking name in any issue message", () => {
+    const secret = "Xk9#mQ2$vL7pW4@nR8zT";
+    const doc = trustDocument({
+      locations: [home],
+      databases: [
+        database("recovery", { name: secret, locationId: "home", critical: true }),
+        database("orphan", { name: `${secret}-2` }),
+      ],
+      keys: [key("master", { name: `${secret}-3` }), key("memo", { name: `${secret}-4`, memorized: true })],
+      edges: [contains("recovery", "master"), unlocks("master", "recovery")],
+    });
+    const messages = analyzeDocument(doc)
+      .issues.filter((i) => i.code !== "text-looks-secret")
+      .map((i) => i.message);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("(name hidden: looks like a secret) → unlocks → [(name hidden: looks like a secret)]"),
+        "Critical database [(name hidden: looks like a secret)] cannot be opened on a normal day.",
+        "[(name hidden: looks like a secret)] is protected but has no unlock rule, so it can never be opened.",
+        '"(name hidden: looks like a secret)" is only memorized. Forgetting it loses it.',
+      ]),
+    );
+    expect(messages.some((m) => m.includes(secret))).toBe(false);
+  });
+
+  it("keeps ordinary names in issue messages", () => {
+    const doc = trustDocument({ keys: [key("k", { name: "LUKS2 passphrase", memorized: true })] });
+    expect(analyzeDocument(doc).issues.map((i) => i.message)).toContain('"LUKS2 passphrase" is only memorized. Forgetting it loses it.');
+  });
+
+  it.each<[string, Partial<TrustDocument>, string, string]>([
+    ["document title", { title: "JBSWY3DPEHPK3PXP" }, "doc", "title"],
+    ["document notes", { notes: "JBSWY3DPEHPK3PXP" }, "doc", "notes"],
+    ["key note", { keys: [key("k", { memorized: true, note: "JBSWY3DPEHPK3PXP" })] }, "k", "note"],
+    [
+      "database product, encryption and note",
+      { databases: [database("d", { protection: "none", product: "JBSWY3DPEHPK3PXP", encryption: "JBSWY3DPEHPK3PXP", note: "JBSWY3DPEHPK3PXP" })] },
+      "d",
+      "product, encryption and note",
+    ],
+    ["rule label", { databases: [database("d")], keys: [key("k")], edges: [partial("k", "d", "r")], rules: [{ ...rule("r", "d", 1), label: "JBSWY3DPEHPK3PXP" }] }, "r", "label"],
+    ["scenario name", { scenarios: [{ id: "s", name: "JBSWY3DPEHPK3PXP", events: [] }] }, "s", "name"],
+  ])("scans the %s", (_, parts, id, fields) => {
+    const issue = analyzeDocument(trustDocument(parts)).issues.find((i) => i.code === "text-looks-secret");
+    expect(issue?.nodeIds).toEqual([id]);
+    expect(issue?.message).toMatch(new RegExp(`^The ${fields} looks? like a real secret`));
   });
 });
 

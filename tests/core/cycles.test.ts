@@ -48,6 +48,15 @@ describe("findCircularGroups", () => {
     expect(group?.cycle.map((a) => a.edgeId)).toEqual(["u-master-recovery", "c-recovery-master"]);
   });
 
+  it("ignores loops through an ephemeral database", () => {
+    const doc = trustDocument({
+      databases: [database("tails", { category: "session", ephemeral: true, protection: "none" }), database("disk")],
+      keys: [key("generated")],
+      edges: [contains("tails", "generated"), unlocks("generated", "tails"), contains("tails", "disk"), contains("disk", "tails")],
+    });
+    expect(findCircularGroups(buildGraph(doc))).toEqual([]);
+  });
+
   it("reports the shortest cycle when a long loop has a shortcut", () => {
     // 0>1>2>3>4>5>0 plus shortcut 3>0: shortest cycle is 0>1>2>3>0.
     const graph = graphOf(6, [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0], [3, 0]]);

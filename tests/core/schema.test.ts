@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../../src/core/model";
-import { parseDocument } from "../../src/core/schema";
+import { parseDocument, parseDocumentText } from "../../src/core/schema";
 import { contains, database, key, location, partial, rule, trustDocument, unlocks } from "./builders";
 
 function roundTrip(value: unknown): unknown {
@@ -76,6 +76,13 @@ describe("parseDocument", () => {
     input.keys[1]!.note = "n".repeat(LIMITS.noteLength + 1);
     input.keys[2]!.name = "n".repeat(LIMITS.nameLength);
     expect(errorsOf(input).map((e) => e.path)).toEqual(["keys[0].name", "keys[1].note"]);
+  });
+
+  it("counts string limits in characters, not UTF-16 units", () => {
+    const input = roundTrip(valid) as { keys: { name: string }[] };
+    input.keys[0]!.name = "🔑".repeat(LIMITS.nameLength);
+    input.keys[1]!.name = "🔑".repeat(LIMITS.nameLength + 1);
+    expect(errorsOf(input).map((e) => e.path)).toEqual(["keys[1].name"]);
   });
 
   it("rejects more nodes or edges than the limits instead of truncating", () => {
@@ -154,6 +161,16 @@ describe("parseDocument", () => {
     expect(errorsOf(roundTrip(doc))).toEqual([{ path: "edges[1]", message: "Duplicate connection" }]);
   });
 
+  it("rejects a key joining the same rule twice", () => {
+    const doc = trustDocument({
+      databases: [database("d1")],
+      keys: [key("k1")],
+      edges: [partial("k1", "d1", "r1"), { ...partial("k1", "d1", "r1"), id: "other" }],
+      rules: [rule("r1", "d1", 1)],
+    });
+    expect(errorsOf(roundTrip(doc))).toEqual([{ path: "edges[1]", message: "Duplicate connection" }]);
+  });
+
   it("checks location and scenario references", () => {
     const doc = trustDocument({
       databases: [database("d1", { locationId: "nowhere" })],
@@ -178,6 +195,62 @@ describe("parseDocument", () => {
     ]);
   });
 
+  it("rejects events that do not fit the kind of entity they target", () => {
+    const doc = trustDocument({
+      databases: [database("gone", { ephemeral: true, protection: "none" })],
+      keys: [key("file"), key("finger", { category: "biometric" })],
+      scenarios: [
+        {
+          id: "s1",
+          name: "Bad",
+          events: [
+            { type: "key-forgotten", keyId: "file" },
+            { type: "biometric-unavailable", keyId: "file" },
+            { type: "database-lost", databaseId: "gone" },
+            { type: "database-stolen", databaseId: "gone" },
+          ],
+        },
+      ],
+    });
+    expect(errorsOf(roundTrip(doc))).toEqual([
+      { path: "scenarios[0].events[0].keyId", message: 'Key "file" is not memorized, so it cannot be forgotten' },
+      { path: "scenarios[0].events[1].keyId", message: 'Key "file" is not a biometric' },
+      { path: "scenarios[0].events[2].databaseId", message: 'Database "gone" is ephemeral, so it no longer exists' },
+      { path: "scenarios[0].events[3].databaseId", message: 'Database "gone" is ephemeral, so it no longer exists' },
+    ]);
+  });
+
+  it("accepts events that fit their targets", () => {
+    const doc = trustDocument({
+      locations: [location("home")],
+      databases: [database("laptop", { locationId: "home", protection: "none" })],
+      keys: [key("memo", { memorized: true }), key("file"), key("finger", { category: "biometric" })],
+      scenarios: [
+        {
+          id: "s1",
+          name: "Good",
+          events: [
+            { type: "location-unreachable", locationId: "home" },
+            { type: "location-compromised", locationId: "home" },
+            { type: "key-forgotten", keyId: "memo" },
+            { type: "key-compromised", keyId: "file" },
+            { type: "key-compromised", keyId: "finger" },
+            { type: "biometric-unavailable", keyId: "finger" },
+            { type: "database-lost", databaseId: "laptop" },
+            { type: "database-stolen", databaseId: "laptop" },
+          ],
+        },
+      ],
+    });
+    expect(parseDocument(roundTrip(doc))).toEqual({ ok: true, value: doc });
+  });
+
+  it("reports an unknown event type once, without guessing its id field", () => {
+    const input = roundTrip(valid) as { scenarios: { events: Record<string, unknown>[] }[] };
+    input.scenarios[0]!.events[0] = { type: "meteor-strike", keyId: "master" };
+    expect(errorsOf(input).map((e) => e.path)).toEqual(["scenarios[0].events[0].type"]);
+  });
+
   it("rejects duplicate and unknown data types", () => {
     const input = roundTrip(valid) as { databases: { dataTypes: string[] }[] };
     input.databases[0]!.dataTypes = ["files", "files", "gold"];
@@ -191,5 +264,71 @@ describe("parseDocument", () => {
     const paths = errorsOf(input).map((e) => e.path);
     expect(paths).toContain("keys[0].memorized");
     expect(paths).toContain("keys[0].style");
+  });
+
+  it("rejects objects and lists that JSON.parse cannot produce", () => {
+    class Box {
+      constructor(readonly id: string) {}
+    }
+    const input = roundTrip(valid) as Record<string, unknown[]>;
+    input["locations"]![0] = new Box("home");
+    expect(errorsOf(input).map((e) => e.path)).toContain("locations[0]");
+    expect(errorsOf(Object.create(roundTrip(valid) as object))).toEqual([{ path: "", message: "Expected a document object" }]);
+
+    class List extends Array<unknown> {}
+    const list = roundTrip(valid) as Record<string, unknown>;
+    list["keys"] = List.from(valid.keys);
+    expect(errorsOf(list)).toContainEqual({ path: "keys", message: "Expected a list" });
+  });
+
+  it("accepts objects without a prototype", () => {
+    const input = Object.assign(Object.create(null) as object, roundTrip(valid));
+    expect(parseDocument(input)).toEqual({ ok: true, value: valid });
+  });
+
+  it("never reads a field from a polluted Object.prototype", () => {
+    const input = roundTrip(valid) as Record<string, unknown>;
+    delete input["title"];
+    Object.defineProperty(Object.prototype, "title", { value: "polluted", configurable: true });
+    try {
+      expect(errorsOf(input).map((e) => e.path)).toEqual(["title"]);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)["title"];
+    }
+  });
+
+  it("never runs getters, so a field cannot change between reads", () => {
+    let reads = 0;
+    const input = roundTrip(valid) as Record<string, unknown>;
+    Object.defineProperty(input, "title", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return "Test";
+      },
+    });
+    expect(errorsOf(input).map((e) => e.path)).toEqual(["title"]);
+    expect(reads).toBe(0);
+  });
+});
+
+describe("parseDocumentText", () => {
+  it("parses valid JSON text", () => {
+    expect(parseDocumentText(JSON.stringify(valid))).toEqual({ ok: true, value: valid });
+  });
+
+  it("rejects text over the size limit before parsing it", () => {
+    const text = JSON.stringify({ ...valid, notes: "" }).replace('"notes":""', `"notes":"${"x".repeat(LIMITS.documentLength)}"`);
+    expect(parseDocumentText(text)).toEqual({ ok: false, error: [{ path: "", message: "The file is larger than the 16 MiB limit" }] });
+  });
+
+  it("reports invalid JSON without quoting the input", () => {
+    const result = parseDocumentText('{"title": "hunter2-secret"');
+    expect(result).toEqual({ ok: false, error: [{ path: "", message: "The file is not valid JSON" }] });
+  });
+
+  it("validates the parsed value", () => {
+    expect(parseDocumentText("[]").ok).toBe(false);
+    expect(parseDocumentText("null").ok).toBe(false);
   });
 });

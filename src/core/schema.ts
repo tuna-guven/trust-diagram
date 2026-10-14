@@ -1,5 +1,5 @@
 // Document validation (DESIGN.md 4.4). Every import and decrypted load goes through
-// parseDocument. Readers record an error and return a placeholder so one pass reports
+// parseDocument, or parseDocumentText for raw JSON text (DESIGN.md 9). Readers record an error and return a placeholder so one pass reports
 // as many problems as possible; a document with any error is never returned.
 
 import {
@@ -50,8 +50,22 @@ function fail(ctx: Context, path: string, message: string): void {
   if (ctx.errors.length < MAX_ERRORS) ctx.errors.push({ path, message });
 }
 
+// JSON.parse only produces plain objects and arrays with own data properties. Anything
+// else did not come from JSON, so it is rejected, and only own data properties are read:
+// a polluted Object.prototype cannot supply a missing field and no getter ever runs.
 function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function ownValue(target: object, key: string | number): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return descriptor !== undefined && "value" in descriptor ? (descriptor.value as unknown) : undefined;
+}
+
+function isList(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
 }
 
 function child(path: string, key: string | number): string {
@@ -65,14 +79,22 @@ function readObject(ctx: Context, value: unknown, path: string): JsonObject {
   return {};
 }
 
+// Limits count Unicode code points, so an emoji is one character, not two UTF-16 units.
+// A string over twice the limit in UTF-16 units is too long whatever it contains, so
+// oversized input is rejected without being copied.
+function characterCount(value: string, maxLength: number): number {
+  if (value.length <= maxLength || value.length > 2 * maxLength) return value.length;
+  return Array.from(value).length;
+}
+
 function readString(ctx: Context, obj: JsonObject, key: string, path: string, maxLength: number): string {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   const at = child(path, key);
   if (typeof value !== "string") {
     fail(ctx, at, "Expected a string");
     return "";
   }
-  if (value.length > maxLength) {
+  if (characterCount(value, maxLength) > maxLength) {
     fail(ctx, at, `Longer than ${String(maxLength)} characters`);
     return "";
   }
@@ -80,7 +102,7 @@ function readString(ctx: Context, obj: JsonObject, key: string, path: string, ma
 }
 
 function readBoolean(ctx: Context, obj: JsonObject, key: string, path: string): boolean {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   if (typeof value === "boolean") return value;
   fail(ctx, child(path, key), "Expected true or false");
   return false;
@@ -93,7 +115,7 @@ function readNumber(
   path: string,
   bounds: { min: number; max: number; integer?: boolean },
 ): number {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   const at = child(path, key);
   if (typeof value !== "number" || !Number.isFinite(value)) {
     fail(ctx, at, "Expected a finite number");
@@ -117,7 +139,7 @@ function readEnum<T extends string | number>(
   path: string,
   values: readonly T[],
 ): T {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   const match = values.find((candidate) => candidate === value);
   if (match !== undefined) return match;
   fail(ctx, child(path, key), `Expected one of: ${values.join(", ")}`);
@@ -127,27 +149,27 @@ function readEnum<T extends string | number>(
 }
 
 function readId(ctx: Context, obj: JsonObject, key: string, path: string): Id {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   if (typeof value === "string" && ID_PATTERN.test(value)) return value;
   fail(ctx, child(path, key), "Expected an id of 1-64 letters, digits, '-' or '_'");
   return "";
 }
 
 function readNullableId(ctx: Context, obj: JsonObject, key: string, path: string): Id | null {
-  return obj[key] === null ? null : readId(ctx, obj, key, path);
+  return ownValue(obj, key) === null ? null : readId(ctx, obj, key, path);
 }
 
 function readColor(ctx: Context, obj: JsonObject, key: string, path: string): HexColor {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   if (typeof value === "string" && isHexColor(value)) return value;
   fail(ctx, child(path, key), "Expected a colour like #1a2b3c (lowercase hex)");
   return PLACEHOLDER_COLOR;
 }
 
 function readList(ctx: Context, obj: JsonObject, key: string, path: string, maxItems: number): readonly unknown[] {
-  const value = obj[key];
+  const value = ownValue(obj, key);
   const at = child(path, key);
-  if (!Array.isArray(value)) {
+  if (!isList(value)) {
     fail(ctx, at, "Expected a list");
     return [];
   }
@@ -155,7 +177,7 @@ function readList(ctx: Context, obj: JsonObject, key: string, path: string, maxI
     fail(ctx, at, `More than ${String(maxItems)} entries`);
     return [];
   }
-  return value as readonly unknown[];
+  return Array.from({ length: value.length }, (_, index) => ownValue(value, index));
 }
 
 function parseNodeStyle(ctx: Context, value: unknown, path: string): NodeStyle {
@@ -212,7 +234,7 @@ function parseDatabase(ctx: Context, value: unknown, path: string): Database {
     ephemeral: readBoolean(ctx, obj, "ephemeral", path),
     critical: readBoolean(ctx, obj, "critical", path),
     note: readString(ctx, obj, "note", path, LIMITS.noteLength),
-    style: parseNodeStyle(ctx, obj["style"], child(path, "style")),
+    style: parseNodeStyle(ctx, ownValue(obj, "style"), child(path, "style")),
   };
 }
 
@@ -224,7 +246,7 @@ function parseKey(ctx: Context, value: unknown, path: string): Key {
     category: readEnum(ctx, obj, "category", path, KEY_CATEGORIES),
     memorized: readBoolean(ctx, obj, "memorized", path),
     note: readString(ctx, obj, "note", path, LIMITS.noteLength),
-    style: parseNodeStyle(ctx, obj["style"], child(path, "style")),
+    style: parseNodeStyle(ctx, ownValue(obj, "style"), child(path, "style")),
   };
 }
 
@@ -245,7 +267,7 @@ function parseEdge(ctx: Context, value: unknown, path: string): Edge {
     from: readId(ctx, obj, "from", path),
     to: readId(ctx, obj, "to", path),
     ruleId: readNullableId(ctx, obj, "ruleId", path),
-    style: parseEdgeStyle(ctx, obj["style"], child(path, "style")),
+    style: parseEdgeStyle(ctx, ownValue(obj, "style"), child(path, "style")),
   };
 }
 
@@ -262,6 +284,8 @@ function parseRule(ctx: Context, value: unknown, path: string): UnlockRule {
 function parseEvent(ctx: Context, value: unknown, path: string): ScenarioEvent {
   const obj = readObject(ctx, value, path);
   const type = readEnum(ctx, obj, "type", path, SCENARIO_EVENT_TYPES);
+  // With an unknown type we cannot tell which id field to expect, so don't guess one.
+  if (ownValue(obj, "type") !== type) return { type: "location-unreachable", locationId: "" };
   switch (type) {
     case "location-unreachable":
     case "location-compromised":
@@ -309,7 +333,7 @@ function parseAll<T>(
 }
 
 // Placeholder ids ("") come from fields that already failed; skip them to avoid cascades.
-function checkReference(ctx: Context, id: Id | null, valid: ReadonlySet<Id>, path: string, what: string): void {
+function checkReference(ctx: Context, id: Id | null, valid: { has(id: Id): boolean }, path: string, what: string): void {
   if (id === null || id === "") return;
   if (!valid.has(id)) fail(ctx, path, `Unknown ${what} "${id}"`);
 }
@@ -392,26 +416,70 @@ function checkReferences(ctx: Context, doc: TrustDocument): void {
     }
   });
 
+  const targets: EventTargets = {
+    locationIds,
+    keys: new Map(doc.keys.map((k) => [k.id, k])),
+    databases: new Map(doc.databases.map((d) => [d.id, d])),
+  };
   doc.scenarios.forEach((scenario, scenarioIndex) => {
     scenario.events.forEach((event, eventIndex) => {
-      const path = `scenarios[${String(scenarioIndex)}].events[${String(eventIndex)}]`;
-      if ("locationId" in event) checkReference(ctx, event.locationId, locationIds, `${path}.locationId`, "location");
-      if ("keyId" in event) checkReference(ctx, event.keyId, keyIds, `${path}.keyId`, "key");
-      if ("databaseId" in event) checkReference(ctx, event.databaseId, databaseIds, `${path}.databaseId`, "database");
+      checkEvent(ctx, targets, event, `scenarios[${String(scenarioIndex)}].events[${String(eventIndex)}]`);
     });
   });
 }
 
+// An event must fit the kind of entity it targets (DESIGN.md 4.4): only a memorized key
+// can be forgotten, only a biometric can be unavailable, and an ephemeral database no
+// longer exists, so it cannot be lost or stolen.
+interface EventTargets {
+  locationIds: ReadonlySet<Id>;
+  keys: ReadonlyMap<Id, Key>;
+  databases: ReadonlyMap<Id, Database>;
+}
+
+function checkEvent(ctx: Context, targets: EventTargets, event: ScenarioEvent, path: string): void {
+  switch (event.type) {
+    case "location-unreachable":
+    case "location-compromised":
+      checkReference(ctx, event.locationId, targets.locationIds, `${path}.locationId`, "location");
+      return;
+    case "key-forgotten":
+    case "key-compromised":
+    case "biometric-unavailable": {
+      const at = `${path}.keyId`;
+      const key = targets.keys.get(event.keyId);
+      if (key === undefined) {
+        checkReference(ctx, event.keyId, targets.keys, at, "key");
+      } else if (event.type === "key-forgotten" && !key.memorized) {
+        fail(ctx, at, `Key "${key.id}" is not memorized, so it cannot be forgotten`);
+      } else if (event.type === "biometric-unavailable" && key.category !== "biometric") {
+        fail(ctx, at, `Key "${key.id}" is not a biometric`);
+      }
+      return;
+    }
+    case "database-lost":
+    case "database-stolen": {
+      const at = `${path}.databaseId`;
+      const database = targets.databases.get(event.databaseId);
+      if (database === undefined) checkReference(ctx, event.databaseId, targets.databases, at, "database");
+      else if (database.ephemeral) fail(ctx, at, `Database "${database.id}" is ephemeral, so it no longer exists`);
+      return;
+    }
+  }
+}
+
 export function parseDocument(input: unknown): Result<TrustDocument, ValidationError[]> {
   if (!isObject(input)) return err([{ path: "", message: "Expected a document object" }]);
-  if (input["schemaVersion"] !== 1) {
+  if (ownValue(input, "schemaVersion") !== 1) {
     return err([{ path: "schemaVersion", message: "Unsupported schema version (expected 1)" }]);
   }
 
   const ctx: Context = { errors: [] };
-  const nodeCount =
-    (Array.isArray(input["databases"]) ? input["databases"].length : 0) +
-    (Array.isArray(input["keys"]) ? input["keys"].length : 0);
+  const listLength = (key: string): number => {
+    const value = ownValue(input, key);
+    return isList(value) ? value.length : 0;
+  };
+  const nodeCount = listLength("databases") + listLength("keys");
   if (nodeCount > LIMITS.nodes) {
     return err([{ path: "", message: `More than ${String(LIMITS.nodes)} databases and keys` }]);
   }
@@ -427,10 +495,28 @@ export function parseDocument(input: unknown): Result<TrustDocument, ValidationE
     rules: parseAll(ctx, input, "rules", LIMITS.rules, parseRule),
     scenarios: parseAll(ctx, input, "scenarios", LIMITS.scenarios, parseScenario),
     notes: readString(ctx, input, "notes", "", LIMITS.noteLength),
-    view: parseView(ctx, input["view"], "view"),
+    view: parseView(ctx, ownValue(input, "view"), "view"),
   };
 
   checkUniqueIds(ctx, doc);
   checkReferences(ctx, doc);
   return ctx.errors.length === 0 ? ok(doc) : err(ctx.errors);
+}
+
+/**
+ * Parses document JSON text. The length check runs before JSON.parse, so oversized input
+ * costs nothing to reject (DESIGN.md 4.4, 9).
+ */
+export function parseDocumentText(text: string): Result<TrustDocument, ValidationError[]> {
+  if (text.length > LIMITS.documentLength) {
+    return err([{ path: "", message: "The file is larger than the 16 MiB limit" }]);
+  }
+  let input: unknown;
+  try {
+    input = JSON.parse(text) as unknown;
+  } catch {
+    // Parser messages quote part of the input, which may be sensitive, so they are dropped.
+    return err([{ path: "", message: "The file is not valid JSON" }]);
+  }
+  return parseDocument(input);
 }

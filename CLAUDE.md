@@ -40,7 +40,10 @@ npm run check          # typecheck + lint + test (run before every commit)
 ## Security rules (non-negotiable)
 
 - Never use `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, or `setTimeout`/`setInterval` with a string. Build DOM with the helpers in `src/ui/dom.ts` (`createElement`, `createElementNS`, `textContent`).
-- Never set a `style="..."` attribute. Use SVG presentation attributes or `element.style.setProperty`.
+- Never set a `style="..."` attribute. Use SVG presentation attributes or the `setStyle` helper in `src/ui/dom.ts`.
+- Never use `window.open`, `location.assign`/`replace` or assign to `location`: navigation can carry data off the machine.
+- `id`, `name` and `for` values must start with `tc-` (DOM clobbering, DESIGN.md 10.4).
+- Never deploy to `<account>.github.io`; the app needs a dedicated origin (DESIGN.md 10.7).
 - Never use `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `navigator.sendBeacon`, or anything else that touches the network. No CDNs, web fonts, analytics or external links that load resources.
 - Never write to cookies, `localStorage` or `sessionStorage`. The only persistent write is the encrypted envelope in IndexedDB (`src/persist/vault.ts`).
 - Never log document contents, passphrases or keys, including in tests' console output.

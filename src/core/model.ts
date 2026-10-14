@@ -165,6 +165,8 @@ export interface TrustDocument {
 }
 
 export const LIMITS = {
+  /** Document JSON text, in UTF-16 code units (16 MiB). */
+  documentLength: 16 * 1024 * 1024,
   nodes: 2_000,
   edges: 10_000,
   locations: 500,

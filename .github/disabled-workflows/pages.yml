@@ -1,3 +1,11 @@
+# DISABLED: deploying to tuna-guven.github.io is unsafe (DESIGN.md 10.7).
+#
+# Every GitHub Pages site of an account shares the origin https://<account>.github.io,
+# so any other Pages site on it counts as 'self' for the CSP and shares IndexedDB and
+# service workers with this app. This file is kept outside .github/workflows/ so GitHub
+# does not run it. Move it back only once the app is served from a dedicated custom
+# domain that hosts nothing else, set in the repository's Pages settings first.
+
 name: Deploy to GitHub Pages
 
 on:
@@ -13,7 +21,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # No dependency cache here: the deployed build is installed fresh from the lockfile.
   build:
+    needs: ci
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,9 +35,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
       - run: npm ci
-      - run: npm run check
       - run: npm run build
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

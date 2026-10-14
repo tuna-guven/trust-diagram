@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release, so a compromised version is likely
+    # to be found and pulled before it reaches this project.
+    cooldown:
+      default-days: 7
     groups:
       dev-tooling:
         dependency-type: development
@@ -11,3 +15,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release, so a compromised version is likely
+    # to be found and pulled before it reaches this project.
+    cooldown:
+      default-days: 7
