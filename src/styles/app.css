@@ -33,7 +33,7 @@ body {
   color: var(--fg);
 }
 
-#app {
+#tc-app {
   display: flex;
   flex-direction: column;
   height: 100%;

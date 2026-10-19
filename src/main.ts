@@ -8,8 +8,8 @@ function main(): void {
     return;
   }
 
-  const root = document.getElementById("app");
-  if (root === null) throw new Error("Missing #app element in index.html");
+  const root = document.getElementById("tc-app");
+  if (root === null) throw new Error("Missing #tc-app element in index.html");
 
   root.replaceChildren(
     createElement("header", { class: "toolbar" }, [createElement("h1", {}, ["trustchain"])]),

@@ -1,6 +1,7 @@
 // Document validation (DESIGN.md 4.4). Every import and decrypted load goes through
-// parseDocument, or parseDocumentText for raw JSON text (DESIGN.md 9). Readers record an error and return a placeholder so one pass reports
-// as many problems as possible; a document with any error is never returned.
+// parseDocument, or parseDocumentText for raw JSON text (DESIGN.md 9). Readers record an
+// error and return a placeholder so one pass reports as many problems as possible; a
+// document with any error is never returned.
 
 import {
   DATA_TYPES,

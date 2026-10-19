@@ -18,11 +18,12 @@ function member(names) {
 }
 
 /**
- * Matches destructuring by name, such as const { innerHTML } = el.
+ * Matches an object key by name, both destructuring (const { innerHTML } = el) and
+ * object literals (Object.assign(el, { innerHTML })), which write the member directly.
  * @param {string} names a regex literal such as "/^(a|b)$/"
  */
-function destructured(names) {
-  return `ObjectPattern > Property:matches([key.name=${names}], [key.value=${names}])`;
+function objectKey(names) {
+  return `Property:matches([key.name=${names}], [key.value=${names}])`;
 }
 
 const htmlSinks =
@@ -35,7 +36,7 @@ const bannedSyntax = [
     message: "HTML/CSS string sinks and foreign-node imports are banned. Use the helpers in src/ui/dom.ts.",
   },
   {
-    selector: destructured(htmlSinks),
+    selector: objectKey(htmlSinks),
     message: "HTML/CSS string sinks and foreign-node imports are banned. Use the helpers in src/ui/dom.ts.",
   },
   {
@@ -106,7 +107,7 @@ const domSinkSyntax = [
     message: "Create elements and set attributes or styles through the helpers in src/ui/dom.ts.",
   },
   {
-    selector: destructured(domMethods),
+    selector: objectKey(domMethods),
     message: "Create elements and set attributes or styles through the helpers in src/ui/dom.ts.",
   },
   {
@@ -129,6 +130,13 @@ const sourceSyntax = [
 const domPropertySyntax = [
   {
     selector: "AssignmentExpression > MemberExpression.left[property.name=/^(id|name|htmlFor)$/]",
+    message: "Set id, name and for through the helpers in src/ui/dom.ts, which enforce the tc- prefix.",
+  },
+  {
+    // Object.assign writes each key as a property, so { id } there is an assignment too.
+    // Other object literals with an id key are plain data, such as domain entities.
+    selector:
+      "CallExpression[callee.object.name='Object'][callee.property.name='assign'] > ObjectExpression > Property:matches([key.name=/^(id|name|htmlFor)$/], [key.value=/^(id|name|htmlFor)$/])",
     message: "Set id, name and for through the helpers in src/ui/dom.ts, which enforce the tc- prefix.",
   },
 ];
